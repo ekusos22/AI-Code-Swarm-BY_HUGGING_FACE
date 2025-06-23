@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# IDE/Editor settings
+.vscode/
+.idea/
+
+# Environment variables
+.env
+
+# AI-generated project files
+Project/
