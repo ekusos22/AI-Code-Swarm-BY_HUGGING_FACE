@@ -9,25 +9,26 @@ from huggingface_hub import InferenceClient
 load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 
+### ▼▼▼ 変更点1: タイムアウトを延長してInferenceClientを初期化 ▼▼▼ ###
 try:
     if not HF_TOKEN:
         raise ValueError("環境変数 `HF_TOKEN` が設定されていません。")
-    client = InferenceClient(token=HF_TOKEN)
+    # タイムアウトを120秒に設定し、大規模モデルのコールドスタートに対応
+    client = InferenceClient(token=HF_TOKEN, timeout=120)
 except Exception as e:
     print(f"Hugging Faceクライアントの初期化に失敗しました: {e}")
     client = None
 
 # --- デフォルトのモデル設定 (事前設定用) ---
-# この設定は、ユーザーが「事前設定」を選んだ場合や、選択をスキップした場合に使用されます。
 DEFAULT_PRESIDENT_MODEL = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 DEFAULT_PM_MODEL = "meta-llama/Meta-Llama-3-8B-Instruct"
 DEFAULT_ENGINEER_MODEL = "deepseek-ai/deepseek-coder-6.7b-instruct"
 
-# --- おすすめパターンの定義 ---
+### ▼▼▼ 変更点2: おすすめパターンに注意書きを追加 ▼▼▼ ###
 RECOMMENDED_PATTERNS = [
     {
-        "name": "パフォーマンス重視型 (品質最優先)",
-        "description": "各役割で最高の性能を持つ専門家を配置。最高の成果物を目指します。",
+        "name": "パフォーマンス重視型 (品質最優先 / 上級者向け)",
+        "description": "各役割で最高の性能を持つ専門家を配置。最高の成果物を目指します。\n   ⚠️ 注意: 33Bモデルは非常に大きく、無料APIではタイムアウトする可能性が高いです。",
         "models": {
             "president": "meta-llama/Meta-Llama-3-70B-Instruct",
             "pm": "mistralai/Mixtral-8x7B-Instruct-v0.1",
@@ -59,7 +60,34 @@ PROJECT_DIR = "Project"
 REQUEST_FILE = "request.txt"
 
 # --- ヘルパー関数 (変更なし) ---
-# clean_project_dir, create_project_dir, read_file, write_file は前回と同じ
+# (省略)
+
+# --- AIエージェントの定義 ---
+
+### ▼▼▼ 変更点3: リトライ処理を強化 ▼▼▼ ###
+def ai_call(system_prompt, user_prompt, model_id, max_retries=3):
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    for attempt in range(max_retries):
+        try:
+            print(f"🧠 AI ({model_id}) is thinking...")
+            response = client.chat_completion(
+                messages=messages, model=model_id, temperature=0.1, max_tokens=4096, stream=False,
+            )
+            print("✅ AI response received.")
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"⚠️ API呼び出しエラー (試行 {attempt + 1}/{max_retries}): {e}")
+            if "timeout" in str(e).lower():
+                print("   ヒント: タイムアウトエラーが発生しました。大規模モデルの場合、起動に時間がかかっている可能性があります。")
+            # 待機時間を15秒に延長
+            time.sleep(15)
+    print("❌ AI呼び出しに失敗しました。")
+    return None
+
+# --- 他の関数 (省略) ---
+# president_ai, project_manager_ai, engineer_ai, select_models, main などの関数は
+# 前回提示したコードと同じものをここに配置してください。
+# 以下に省略せずに全コードを再掲します。
 
 def clean_project_dir():
     if not os.path.exists(PROJECT_DIR): return
@@ -81,25 +109,6 @@ def read_file(filepath):
 def write_file(filepath, content):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f: f.write(content)
-
-
-# --- AIエージェントの定義 ---
-
-def ai_call(system_prompt, user_prompt, model_id, max_retries=3):
-    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-    for attempt in range(max_retries):
-        try:
-            print(f"🧠 AI ({model_id}) is thinking...")
-            response = client.chat_completion(
-                messages=messages, model=model_id, temperature=0.1, max_tokens=4096, stream=False,
-            )
-            print("✅ AI response received.")
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"⚠️ API呼び出しエラー (試行 {attempt + 1}/{max_retries}): {e}")
-            time.sleep(10)
-    print("❌ AI呼び出しに失敗しました。")
-    return None
 
 def president_ai(user_request, model_id):
     system_prompt = "あなたは企業のPresidentです。ユーザーの要求を元に、開発プロジェクトの基本方針と概要を決定し、Project Managerに指示を出してください。出力は簡潔な指示形式で、Markdownで記述してください。挨拶や署名などの余計なテキストは一切含めないでください。"
@@ -167,15 +176,12 @@ def engineer_ai(task, engineer_id, fallback_filename, model_id):
         print(f"❌ Engineer #{engineer_id}がコードの生成に失敗しました。")
         return False
 
-# --- 新しい関数: モデル選択 ---
-
 def select_models():
     """ユーザーに対話形式でAIモデルの組み合わせを選択させる関数"""
     print("\n--- AIモデル設定 ---")
     while True:
         choice = input("AIモデルの組み合わせを選択してください:\n  1: おすすめ設定から選ぶ\n  2: 事前設定を使用する\n> ").strip()
-        if choice in ['1', '2']:
-            break
+        if choice in ['1', '2']: break
         print("無効な入力です。'1' または '2' を入力してください。")
 
     if choice == '1':
@@ -194,16 +200,11 @@ def select_models():
                     e_model = selected['models']['engineer']
                     print(f"\n✅「{selected['name']}」が選択されました。")
                     return p_model, pm_model, e_model
-                else:
-                    print("無効な番号です。")
-            except ValueError:
-                print("数値を入力してください。")
+                else: print("無効な番号です。")
+            except ValueError: print("数値を入力してください。")
     
-    # 選択肢 '2' またはフォールバック
     print("\n✅ 事前設定されたモデルを使用します。")
     return DEFAULT_PRESIDENT_MODEL, DEFAULT_PM_MODEL, DEFAULT_ENGINEER_MODEL
-
-# --- メインワークフロー ---
 
 def main():
     """メインの実行関数。"""
@@ -220,10 +221,8 @@ def main():
         print(f"⚠️ 警告: '{PROJECT_DIR}' ディレクトリには既にファイルが存在します。")
         while True:
             choice = input("開始前に中身を全て削除しますか？ (y/n): ").lower().strip()
-            if choice in ['y', 'yes']:
-                print(f"🧹 '{PROJECT_DIR}' ディレクトリの中身を削除しています..."); clean_project_dir(); print("✅ 削除が完了しました。"); break
-            elif choice in ['n', 'no']:
-                print("📂 既存のファイルを保持して処理を続行します。"); break
+            if choice in ['y', 'yes']: print(f"🧹 '{PROJECT_DIR}' ディレクトリの中身を削除しています..."); clean_project_dir(); print("✅ 削除が完了しました。"); break
+            elif choice in ['n', 'no']: print("📂 既存のファイルを保持して処理を続行します。"); break
             else: print("無効な入力です。'y' または 'n' を入力してください。")
     
     if not client: print("エラー: クライアントが初期化されていません。"); return
